@@ -47,6 +47,7 @@ wandb_config = update_dict(
     {
         'project': 'icvf_antmaze',
         'group': 'icvf',
+        'entity': 'dashora7',
         'name': '{icvf_type}_{env_name}',
     }
 )

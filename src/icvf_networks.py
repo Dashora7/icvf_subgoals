@@ -62,7 +62,6 @@ def create_icvf(icvf_cls_or_name, encoder=None, ensemble=True, **kwargs):
 
 
 ##
-#
 # Actual ICVF definitions below
 ##
 

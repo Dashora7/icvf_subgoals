@@ -16,8 +16,6 @@ def expectile_loss(adv, diff, expectile=0.8):
     weight = jnp.where(adv >= 0, expectile, (1 - expectile))
     return weight * diff ** 2
 
-
-
 def icvf_loss(value_fn, target_value_fn, batch, config):
 
     assert all([k in config for k in ['no_intent', 'min_q', 'expectile', 'discount']]), 'Missing ICVF config keys'
@@ -140,8 +138,7 @@ def create_learner(
         print('Extra kwargs:', kwargs)
 
         rng = jax.random.PRNGKey(seed)
-
-        _, value_params =  value_def.init(rng, observations, observations, observations).pop('params')
+        value_params =  value_def.init(rng, observations, observations, observations).pop('params')
         value = TrainState.create(value_def, value_params, tx=optax.adam(**optim_kwargs))
         target_value = TrainState.create(value_def, value_params)
 
