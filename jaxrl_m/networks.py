@@ -456,8 +456,12 @@ class EncodingWrapper(nn.Module):
     stop_gradient: bool
     enable_stacking: bool = False
 
-    def __call__(self, observations: Dict[str, jnp.ndarray]) -> jnp.ndarray:
-        image = observations["image"]
+    def __call__(self, observations: Dict[str, jnp.ndarray], goals=None) -> jnp.ndarray:
+        if type(observations) is tuple:
+            image = observations[0]
+        else:
+            image = observations["image"]
+        
         if self.enable_stacking:
             # Combine stacking and channels into a single dimension
             if len(image.shape) == 4:

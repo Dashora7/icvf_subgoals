@@ -26,9 +26,20 @@ from src.subgoal_diffuser import GCDDPMBCAgent
 from src.icvf_networks import LayerNormMLP
 
 
+
+
+# TODO: run a control experiment. ensure the diffusion model works with unconditional data
+# TODO: goal conditioning doesn't make much sense... is it working?
+# TODO: remove the encoder, we're not w images
+# TODO: is sampling right... ?
+# TODO: try action clipping !!! it'll prevent exiting distribution support
+# TODO: run diffusion on just (x,y) coordinates
+
+
+
 FLAGS = flags.FLAGS
 flags.DEFINE_string('env_name', 'antmaze-large-diverse-v2', 'Environment name.')
-
+flags.DEFINE_string('name', 'icvfweighted', 'Experiment name.')
 flags.DEFINE_string('save_dir', f'experiment_output/', 'Logging dir.')
 
 flags.DEFINE_integer('seed', np.random.choice(1000000), 'Random seed.')
@@ -49,9 +60,9 @@ wandb_config = update_dict(
     default_wandb_config(),
     {
         'project': 'diffusion_antmaze',
-        'group': 'icvf',
         'entity': 'dashora7',
-        'name': '{icvf_type}_{env_name}',
+        'group': 'icvf',
+        'name': '{env_name}_{name}',
     }
 )
 
@@ -69,9 +80,9 @@ config = update_dict(
 gcdataset_config = GCSDataset.get_default_config()
 gcdataset_config['p_samegoal'] = 0.0
 gcdataset_config['p_currgoal'] = 0.0
-gcdataset_config['p_randomgoal'] = 0.0
-gcdataset_config['p_trajgoal'] = 1.0
-gcdataset_config['intent_sametraj'] = True
+gcdataset_config['p_randomgoal'] = 1.0
+gcdataset_config['p_trajgoal'] = 0.0
+gcdataset_config['intent_sametraj'] = False
 
 config_flags.DEFINE_config_dict('wandb', wandb_config, lock_config=False)
 config_flags.DEFINE_config_dict('config', config, lock_config=False)
@@ -82,19 +93,18 @@ def main(_):
     params_dict = {**FLAGS.gcdataset.to_dict(), **FLAGS.config.to_dict()}
     setup_wandb(params_dict, **FLAGS.wandb)
 
-    FLAGS.save_dir = os.path.join(FLAGS.save_dir, wandb.run.project, wandb.config.exp_prefix, wandb.config.experiment_id)
+    FLAGS.save_dir = os.path.join(FLAGS.save_dir, FLAGS.env_name, FLAGS.name)
     os.makedirs(FLAGS.save_dir, exist_ok=True)
     
     env = d4rl_utils.make_env(FLAGS.env_name)
     dataset = d4rl_utils.get_dataset(env)
     gc_dataset = GCSDataset(dataset, **FLAGS.gcdataset.to_dict(), hiql_mode=True)
     example_batch = gc_dataset.sample(1)
-    # print example batch as dict tree
-    # ic(example_batch)
 
     # define encoder
     hidden_dims = tuple([int(h) for h in FLAGS.hidden_dims])
     encoder_def = LayerNormMLP(hidden_dims)
+    
     
     # initialize agent
     rng = jax.random.PRNGKey(FLAGS.seed)
@@ -105,6 +115,7 @@ def main(_):
         goals=example_batch["goals"],
         actions=example_batch["actions"], 
         encoder_def=encoder_def,
+        conditional=True,
         # **FLAGS.config.agent_kwargs,
     )
 

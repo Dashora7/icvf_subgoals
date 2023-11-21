@@ -12,7 +12,7 @@ from flax.core import FrozenDict
 from flax.serialization import from_state_dict
 
 from jaxrl_m.common import JaxRLTrainState, ModuleDict, nonpytree_field
-from jaxrl_m.networks import GCEncodingWrapper
+from jaxrl_m.networks import GCEncodingWrapper, EncodingWrapper
 from jaxrl_m.typing import Batch, PRNGKey
 from jaxrl_m.networks import (
     FourierFeatures,
@@ -35,33 +35,31 @@ ag = learner.create_learner(
     seed=42, observations=np.ones((1, 29)),
     value_def=value_def, **conf_icvf)
 ag = from_state_dict(ag, params_icvf)
-icvf_fn = jax.jit(lambda a, b, c: ag.value(a, b, c))
+icvf_fn = jax.jit(lambda a, b, c: ag.value(a, b, c).sum(0))
 
-def heuristic_to_weights(heuristic):
-    # make a softmax
-    return jax.nn.softmax(heuristic, axis=0)
+def heuristics_to_weights(advs, vs):
+    # step function threshold]
+    a_threshold = jnp.where(advs > 10, 1, 0)
+    v_threshold = jnp.where(vs > 40, 1, 0)
+    return a_threshold * v_threshold
 
 def icvf_weights(batch, usefulness=1, reachability=1):
     obs = batch["observations"]
     subgoal = batch["actions"]
     goal = batch["goals"]
     advantages = icvf_fn(subgoal, goal, goal) - icvf_fn(obs, goal, goal)
-    value = icvf_fn(obs, subgoal, subgoal)
-    h = (reachability * value) + (usefulness * advantages)
-    return heuristic_to_weights(h) * (advantages > 0)
+    values = icvf_fn(obs, subgoal, subgoal) - icvf_fn(obs, goal, goal)
+    return heuristics_to_weights(advantages, values)
 
 def ddpm_bc_loss(noise_prediction, noise, weights=None):
     ddpm_loss = jnp.square(noise_prediction - noise).sum(-1)
     if weights is not None:
-        ddpm_loss = ddpm_loss * weights
+        ddpm_loss = (ddpm_loss * weights) + 1e-8
 
     return ddpm_loss.mean(), {
         "ddpm_loss": ddpm_loss,
         "ddpm_loss_mean": ddpm_loss.mean(),
     }
-
-# TODO: reformat for HIQL
-# (use advantage heuristic weighting from ICVF module)
 
 class GCDDPMBCAgent(flax.struct.PyTreeNode):
     """
@@ -95,7 +93,7 @@ class GCDDPMBCAgent(flax.struct.PyTreeNode):
             rng, key = jax.random.split(rng)
             noise_pred = self.state.apply_fn(
                 {"params": params},  # gradient flows through here
-                (batch["observations"], batch["goals"]), # todo ? what is this
+                (batch["observations"], batch["goals"]),
                 noisy_actions,
                 time,
                 train=True,
@@ -106,7 +104,7 @@ class GCDDPMBCAgent(flax.struct.PyTreeNode):
             return ddpm_bc_loss(
                 noise_pred,
                 noise_sample,
-                weights=icvf_weights(batch, usefulness=1, reachability=1)
+                weights=icvf_weights(batch, usefulness=1, reachability=1) # None
             )
 
         loss_fns = {
@@ -171,6 +169,7 @@ class GCDDPMBCAgent(flax.struct.PyTreeNode):
             )
 
             if clip_sampler:
+                
                 current_x = jnp.clip(
                     current_x, self.config["action_min"], self.config["action_max"]
                 )
@@ -211,7 +210,7 @@ class GCDDPMBCAgent(flax.struct.PyTreeNode):
         )
 
         metrics = {
-            "mse": ((actions - batch["actions"]) ** 2).sum((-2, -1)).mean(),
+            "mse": ((actions - batch["actions"]) ** 2).sum((-1)).mean(),
         }
 
         return metrics
@@ -249,6 +248,7 @@ class GCDDPMBCAgent(flax.struct.PyTreeNode):
         repeat_last_step: int = 0,
         target_update_rate=0.002,
         dropout_target_networks=True,
+        conditional=True
     ):
         # assert len(actions.shape) > 1, "Must use chunking" # WHAT IS THIS?
         if shared_goal_encoder is None or early_goal_concat is None:
@@ -265,13 +265,19 @@ class GCDDPMBCAgent(flax.struct.PyTreeNode):
             else:
                 goal_encoder_def = copy.deepcopy(encoder_def)
 
-        encoder_def = GCEncodingWrapper(
-            encoder=encoder_def,
-            goal_encoder=goal_encoder_def,
-            use_proprio=use_proprio,
-            stop_gradient=False,
-        )
-        
+        if conditional:
+            encoder_def = GCEncodingWrapper(
+                encoder=encoder_def,
+                goal_encoder=goal_encoder_def,
+                use_proprio=use_proprio,
+                stop_gradient=False,
+            )
+        else:
+            encoder_def = EncodingWrapper(
+                encoder=encoder_def,
+                use_proprio=use_proprio,
+                stop_gradient=False,
+            )
 
         networks = {
             "actor": ScoreActor(
@@ -350,8 +356,16 @@ class GCDDPMBCAgent(flax.struct.PyTreeNode):
                 target_update_rate=target_update_rate,
                 dropout_target_networks=dropout_target_networks,
                 action_dim=(actions.shape[-1],),
-                action_max=float('inf'),
-                action_min=-float('inf'),
+                action_max=np.array([
+                    37.727192, 25.744162, 1.362225, 0.99999833, 0.9996134, 0.9998976, 1., 0.6688401, 1.3581934,
+                    0.666928, 0.09978515, 0.66525906, 0.09972495, 0.6649802, 1.3628705, 3.97994, 3.8296807,
+                    3.2464945, 7.7667384, 6.9804316, 6.992314, 7.5553646, 8.838728, 7.5273356, 6.362007,
+                    7.4882784, 6.34013, 7.5405893, 8.736485]),
+                action_min=np.array([
+                    -1.147686, -1.3210605, 0.19845456, -0.9999111, -0.9992996, -0.9997642, -0.99993134,
+                    -0.66625994, -0.09991664, -0.66768396, -1.3384221, -0.6675096, -1.3393451, -0.6663508,
+                    -0.09976307, -3.9992015, -4.3275023, -4.2405367, -6.6633897, -6.935104, -6.61271,
+                    -7.5409, -6.480048, -7.479568, -8.499193, -7.5485454, -7.049403, -7.5065255, -6.3819485]),
                 betas=betas,
                 alphas=alphas,
                 alpha_hats=alpha_hat,
