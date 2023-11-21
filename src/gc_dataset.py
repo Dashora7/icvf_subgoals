@@ -81,6 +81,7 @@ class GCDataset:
 class GCSDataset(GCDataset):
     p_samegoal: float = 0.5
     intent_sametraj: bool = False
+    hiql_mode: bool = False
 
     @staticmethod
     def get_default_config():
@@ -98,6 +99,13 @@ class GCSDataset(GCDataset):
         })
 
     def sample(self, batch_size: int, indx=None):
+        if self.hiql_mode:
+            act_key = 'actions'
+            goal_key = 'goals'
+        else:
+            act_key = 'goals'
+            goal_key = 'desired_goals'
+        
         if indx is None:
             indx = np.random.randint(self.dataset.size-1, size=batch_size)
         
@@ -126,8 +134,15 @@ class GCSDataset(GCDataset):
         
         goal_indx = np.clip(goal_indx + self.curr_goal_shift, 0, self.dataset.size-1)
         desired_goal_indx = np.clip(desired_goal_indx + self.curr_goal_shift, 0, self.dataset.size-1)
-        batch['goals'] = jax.tree_map(lambda arr: arr[goal_indx], self.dataset['observations'])
-        batch['desired_goals'] = jax.tree_map(lambda arr: arr[desired_goal_indx], self.dataset['observations'])
-
+        
+        batch[act_key] = jax.tree_map(lambda arr: arr[goal_indx], self.dataset['observations'])
+        batch[goal_key] = jax.tree_map(lambda arr: arr[desired_goal_indx], self.dataset['observations'])
+        
+        if self.hiql_mode:
+            batch['desired_masks'] = batch['desired_masks'].reshape(-1, 1)
+            batch['masks'] = batch['masks'].reshape(-1, 1)
+            batch['rewards'] = batch['rewards'].reshape(-1, 1)
+            batch['desired_rewards'] = batch['desired_rewards'].reshape(-1, 1)
+            batch['dones_float'] = batch['dones_float'].reshape(-1, 1)
         return batch
 
