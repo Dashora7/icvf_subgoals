@@ -49,6 +49,18 @@ class MLP(nn.Module):
         self.drop = nn.Dropout(rate=self.dropout_rate)
 
     def __call__(self, x: jnp.ndarray, train: bool = False) -> jnp.ndarray:
+        
+        # x = x[:, :2]
+        
+        """ 
+        # TODO: try without torques...
+        xpos = x[:, 0:1]
+        ypos = x[:, 1:2]
+        xpos_discrete = nn.tanh(xpos - jnp.linspace(0, 40, 80))
+        ypos_discrete = nn.tanh(ypos - jnp.linspace(0, 40, 80))
+        x = jnp.concatenate([xpos_discrete, ypos_discrete, x[:, 2:]], axis=-1)
+        """
+        
         for i, layer in enumerate(self.layers):
             x = layer(x)
             if i + 1 < len(self.layers) or self.activate_final:

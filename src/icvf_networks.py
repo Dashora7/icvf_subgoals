@@ -1,5 +1,6 @@
 from jaxrl_m.typing import *
 from jaxrl_m.networks import MLP, get_latent, default_init, ensemblize
+from jaxrl_m.vision.vit import VisionTransformer
 
 import flax.linen as nn
 import jax.numpy as jnp
@@ -43,6 +44,16 @@ class ICVFWithEncoder(nn.Module):
         latent_z = get_latent(self.encoder, intents)
         return self.vf.get_info(latent_s, latent_g, latent_z)
 
+class ICVFViT(nn.Module):
+    encoder: VisionTransformer
+    vf: nn.Module
+
+    @nn.compact
+    def __call__(self, observations: jnp.ndarray, goals: jnp.ndarray, intents: jnp.ndarray, train=True) -> jnp.ndarray:
+        seq = jnp.stack([observations, goals, intents], axis=1)
+        enc = self.encoder(seq, train=train)
+        return self.vf(enc)
+    
 def create_icvf(icvf_cls_or_name, encoder=None, ensemble=True, **kwargs):    
     if isinstance(icvf_cls_or_name, str):
         icvf_cls = icvfs[icvf_cls_or_name]
@@ -151,6 +162,23 @@ class MultilinearVF(nn.Module):
             'phi_z': phi_z,
             'psi_z': psi_z,
         }
+
+class SqueezedLayerNormMLP(nn.Module):
+    hidden_dims: Sequence[int]
+    activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.gelu
+    activate_final: int = False
+    kernel_init: Callable[[PRNGKey, Shape, Dtype], Array] = default_init()
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        for i, size in enumerate(self.hidden_dims):
+            x = nn.Dense(size, kernel_init=self.kernel_init)(x)
+            if i + 1 < len(self.hidden_dims) or self.activate_final:                
+                x = self.activations(x)
+                x = nn.LayerNorm()(x)
+        return jnp.squeeze(x, -1)
+
+
 
 icvfs = {
     'multilinear': MultilinearVF,

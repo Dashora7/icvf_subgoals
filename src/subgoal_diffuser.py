@@ -25,25 +25,13 @@ from src import icvf_learner as learner
 from src.icvf_networks import icvfs, create_icvf
 import pickle
 
-icvf_path = "/nfs/kun2/users/dashora7/antmaze-large-icvf.pkl"   
-with open(icvf_path, 'rb') as f:
-    icvf_params = pickle.load(f)
-params_icvf = icvf_params['agent']
-conf_icvf = icvf_params['config']
-value_def = create_icvf('multilinear', hidden_dims=[256, 256])
-ag = learner.create_learner(
-    seed=42, observations=np.ones((1, 29)),
-    value_def=value_def, **conf_icvf)
-ag = from_state_dict(ag, params_icvf)
-icvf_fn = jax.jit(lambda a, b, c: ag.value(a, b, c).sum(0))
-
 def heuristics_to_weights(advs, vs):
-    # step function threshold]
+    # step function threshold
     a_threshold = jnp.where(advs > 10, 1, 0)
     v_threshold = jnp.where(vs > 40, 1, 0)
     return a_threshold * v_threshold
 
-def icvf_weights(batch, usefulness=1, reachability=1):
+def icvf_weights(batch, usefulness=1, reachability=1, icvf_fn=None):
     obs = batch["observations"]
     subgoal = batch["actions"]
     goal = batch["goals"]
@@ -73,8 +61,8 @@ class GCDDPMBCAgent(flax.struct.PyTreeNode):
     lr_schedules: dict = nonpytree_field()
 
     @partial(jax.jit, static_argnames="pmap_axis")
-    def update(self, batch: Batch, pmap_axis: str = None):
-        # TODO: make loss ICVF weighted
+    def update(self, batch: Batch, pmap_axis: str = None, icvf_fn: object = None):
+        
         def actor_loss_fn(params, rng):
             key, rng = jax.random.split(rng)
             time = jax.random.randint(
@@ -100,12 +88,18 @@ class GCDDPMBCAgent(flax.struct.PyTreeNode):
                 rngs={"dropout": key},
                 name="actor",
             )
-
-            return ddpm_bc_loss(
-                noise_pred,
-                noise_sample,
-                weights=icvf_weights(batch, usefulness=1, reachability=1) # None
-            )
+            if icvf_fn is not None:
+                return ddpm_bc_loss(
+                    noise_pred,
+                    noise_sample,
+                    weights=icvf_weights(batch, usefulness=1, reachability=1, icvf_fn=icvf_fn) # None
+                )
+            else:
+                return ddpm_bc_loss(
+                    noise_pred,
+                    noise_sample,
+                )
+                
 
         loss_fns = {
             "actor": actor_loss_fn,
@@ -123,10 +117,6 @@ class GCDDPMBCAgent(flax.struct.PyTreeNode):
         info["actor_lr"] = self.lr_schedules["actor"](self.state.step)
 
         return self.replace(state=new_state), info
-
-    # make a post init setup
-    
-    
     
     @jax.jit
     def sample_actions(

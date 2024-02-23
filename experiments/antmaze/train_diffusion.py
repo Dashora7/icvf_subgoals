@@ -24,23 +24,16 @@ from icecream import ic
 
 from src.subgoal_diffuser import GCDDPMBCAgent
 from src.icvf_networks import LayerNormMLP
+from flax.serialization import from_state_dict
 
-
-
-
-# TODO: run a control experiment. ensure the diffusion model works with unconditional data
+# TODO: make sure diffusion unconditioned works, sanity
 # TODO: goal conditioning doesn't make much sense... is it working?
-# TODO: remove the encoder, we're not w images
-# TODO: is sampling right... ?
-# TODO: try action clipping !!! it'll prevent exiting distribution support
-# TODO: run diffusion on just (x,y) coordinates
-
-
 
 FLAGS = flags.FLAGS
 flags.DEFINE_string('env_name', 'antmaze-large-diverse-v2', 'Environment name.')
 flags.DEFINE_string('name', 'icvfweighted', 'Experiment name.')
 flags.DEFINE_string('save_dir', f'experiment_output/', 'Logging dir.')
+flags.DEFINE_string('icvf_path', None, 'Path to ICVF parameters.')
 
 flags.DEFINE_integer('seed', np.random.choice(1000000), 'Random seed.')
 flags.DEFINE_integer('log_interval', 1000, 'Metric logging interval.')
@@ -51,6 +44,8 @@ flags.DEFINE_integer('max_steps', int(1e6), 'Number of training steps.')
 
 flags.DEFINE_enum('icvf_type', 'multilinear', list(icvfs), 'Which model to use.')
 flags.DEFINE_list('hidden_dims', [256, 256], 'Hidden sizes.')
+
+
 
 def update_dict(d, additional):
     d.update(additional)
@@ -88,6 +83,17 @@ config_flags.DEFINE_config_dict('wandb', wandb_config, lock_config=False)
 config_flags.DEFINE_config_dict('config', config, lock_config=False)
 config_flags.DEFINE_config_dict('gcdataset', gcdataset_config, lock_config=False)
 
+with open(FLAGS.icvf_path, 'rb') as f:
+    icvf_params = pickle.load(f)
+params_icvf = icvf_params['agent']
+conf_icvf = icvf_params['config']
+value_def = create_icvf('multilinear', hidden_dims=[256, 256])
+ag = learner.create_learner(
+    seed=42, observations=np.ones((1, 29)),
+    value_def=value_def, **conf_icvf)
+ag = from_state_dict(ag, params_icvf)
+icvf_fn = jax.jit(lambda a, b, c: ag.value(a, b, c).sum(0))
+
 def main(_):
     # Create wandb logger
     params_dict = {**FLAGS.gcdataset.to_dict(), **FLAGS.config.to_dict()}
@@ -104,7 +110,6 @@ def main(_):
     # define encoder
     hidden_dims = tuple([int(h) for h in FLAGS.hidden_dims])
     encoder_def = LayerNormMLP(hidden_dims)
-    
     
     # initialize agent
     rng = jax.random.PRNGKey(FLAGS.seed)
@@ -123,7 +128,7 @@ def main(_):
                        smoothing=0.1,
                        dynamic_ncols=True):
         batch = gc_dataset.sample(FLAGS.batch_size)
-        agent, update_info = agent.update(batch)
+        agent, update_info = agent.update(batch, icvf_fn=icvf_fn)
 
         if i % FLAGS.log_interval == 0:
             train_metrics = {f'training/{k}': v for k, v in update_info.items()}

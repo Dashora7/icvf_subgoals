@@ -12,6 +12,19 @@ import ml_collections
 from icecream import ic
 import functools
 
+state_max = jnp.array([37.727192, 25.744162, 1.362225, 0.99999833, 0.9996134, 0.9998976, 1., 0.6688401, 1.3581934,
+                    0.666928, 0.09978515, 0.66525906, 0.09972495, 0.6649802, 1.3628705, 3.97994, 3.8296807,
+                    3.2464945, 7.7667384, 6.9804316, 6.992314, 7.5553646, 8.838728, 7.5273356, 6.362007,
+                    7.4882784, 6.34013, 7.5405893, 8.736485])
+state_min = jnp.array([-1.147686, -1.3210605, 0.19845456, -0.9999111, -0.9992996, -0.9997642, -0.99993134,
+                    -0.66625994, -0.09991664, -0.66768396, -1.3384221, -0.6675096, -1.3393451, -0.6663508,
+                    -0.09976307, -3.9992015, -4.3275023, -4.2405367, -6.6633897, -6.935104, -6.61271,
+                    -7.5409, -6.480048, -7.479568, -8.499193, -7.5485454, -7.049403, -7.5065255, -6.3819485])
+# make uniform sampler
+random_state_sampler = functools.partial(jax.random.uniform, minval=state_min, maxval=state_max)
+
+
+
 def expectile_loss(adv, diff, expectile=0.8):
     weight = jnp.where(adv >= 0, expectile, (1 - expectile))
     return weight * diff ** 2
@@ -63,7 +76,56 @@ def icvf_loss(value_fn, target_value_fn, batch, config):
     ##
     value_loss1 = expectile_loss(adv, q1_gz-v1_gz, config['expectile']).mean()
     value_loss2 = expectile_loss(adv, q2_gz-v2_gz, config['expectile']).mean()
-    value_loss = value_loss1 + value_loss2
+    
+    
+    ###
+    # Push the ICVF to be quasi-metric through regularizing overshoots in triangle inequality
+    # if s+ is optimal, we want them to be the same
+    # if s+ is suboptimal, we want the sum to be less.
+    ###
+    
+    # TODO: where do we want grad to be flowing...?
+    current_v_zz1, current_v_zz2 = value_fn(batch['observations'], batch['desired_goals'], batch['desired_goals'])
+    current_v_zz = (current_v_zz1 + current_v_zz2) / 2
+    v_splus_z1, v_splus_z2 = value_fn(batch['goals'], batch['desired_goals'], batch['desired_goals'])
+    v_splus_z = (v_splus_z1 + v_splus_z2) / 2
+    v_s_splus1, v_s_splus2 = value_fn(batch['observations'], batch['goals'], batch['goals'])
+    v_s_splus = (v_s_splus1 + v_s_splus2) / 2
+    # Compute optimality heuristic
+    # current_v_sgz1, current_v_sgz2 = value_fn(batch['observations'], batch['goals'], batch['desired_goals'])
+    # current_v_sgz = (current_v_sgz1 + current_v_sgz2) / 2
+    QM_C = jax.nn.relu((v_s_splus + v_splus_z) - current_v_zz)
+    QM_C -= 0.15 * (QM_C > 0) * current_v_zz # counteract force of making value big negative value
+    
+    ### 
+    # Make the Value function generally conservative
+    ###
+    # For now, randomly sample a set of states.
+    
+    # sample n states PER goal....
+    
+    """num_states = 10
+    rng = jax.random.PRNGKey(0)
+    random_states = random_state_sampler(shape=(num_states * batch['observations'].shape[0], 29), key=rng)
+    obses = jnp.repeat(batch['observations'], num_states, axis=0)
+    zs = jnp.repeat(batch['desired_goals'], num_states, axis=0)
+    v_sxg1, v_sxg2 = value_fn(obses, random_states, zs)
+    v_sxg = ((v_sxg1 + v_sxg2) / 2).reshape(batch['observations'].shape[0], num_states, 1)
+    v_sxg_lse = jax.scipy.special.logsumexp(v_sxg, axis=1)
+    
+    v_sgg1, v_sgg2 = value_fn(batch['observations'], batch['desired_goals'], batch['desired_goals'])
+    
+    v_sgg = (v_sgg1 + v_sgg2) / 2
+    # get logsumexp
+    
+    C_C =  v_sxg_lse - v_sgg
+    C_C = 10*jax.nn.relu(C_C)"""
+    
+    
+    ###
+    # Compute loss
+    ###
+    value_loss = value_loss1 + value_loss2 + QM_C.mean() # + C_C.mean()   # + QM_C.mean()
 
     def masked_mean(x, mask):
         return (x * mask).sum() / (1e-5 + mask.sum())
@@ -98,7 +160,7 @@ def periodic_target_update(
     return target_model.replace(params=new_target_params)
 
 class ICVFAgent(flax.struct.PyTreeNode):
-    rng: jax.random.PRNGKey
+    # rng: jax.random.PRNGKey
     value: TrainState
     target_value: TrainState
     config: dict = nonpytree_field()
@@ -151,7 +213,8 @@ def create_learner(
             periodic_target_update=periodic_target_update,
         ))
 
-        return ICVFAgent(rng=rng, value=value, target_value=target_value, config=config)
+        # return ICVFAgent(rng=rng, value=value, target_value=target_value, config=config)
+        return ICVFAgent(value=value, target_value=target_value, config=config)
 
 
 def get_default_config():

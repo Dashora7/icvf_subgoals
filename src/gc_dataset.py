@@ -2,6 +2,7 @@ from jaxrl_m.dataset import Dataset
 import dataclasses
 import numpy as np
 import jax
+import jax.numpy as jnp
 import ml_collections
 
 @dataclasses.dataclass
@@ -127,7 +128,6 @@ class GCSDataset(GCDataset):
         if self.terminal:
             batch['masks'] = (1.0 - success.astype(float))
             batch['desired_masks'] = (1.0 - desired_success.astype(float))
-        
         else:
             batch['masks'] = np.ones(batch_size)
             batch['desired_masks'] = np.ones(batch_size)
@@ -144,5 +144,45 @@ class GCSDataset(GCDataset):
             batch['rewards'] = batch['rewards'].reshape(-1, 1)
             batch['desired_rewards'] = batch['desired_rewards'].reshape(-1, 1)
             batch['dones_float'] = batch['dones_float'].reshape(-1, 1)
+        return batch
+
+
+@dataclasses.dataclass
+class DiffusionProposalDataset(GCSDataset):
+    diffusion_agent: object = None
+    one_shot: bool = True
+    icvf_agent: object = None
+    eps: float = 0.1
+    
+    def heuristic(self, s, sg, g):
+        raise NotImplementedError
+    
+    def phi_ball(self, s, s_plus):
+        phi_s = self.icvf_agent.value(s, method='get_phi').mean(0)
+        phi_s_plus = self.icvf_agent.value(s_plus, method='get_phi')
+        return np.linalg.norm(phi_s - phi_s_plus, axis=-1) < self.eps
+    
+    def generate(self, batch_size: int, n_search=1, temp=1.0, indx=None):
+
+        batch = self.sample(batch_size, indx)
+        
+        if self.one_shot:
+            samples = self.diffusion_agent.sample_actions(
+                batch["observations"],
+                batch["desired_goals"],
+                seed=jax.random.PRNGKey(42),
+                temperature=temp
+            )
+            batch["goals"] = samples
+            success = self.phi_ball(batch["observations"], samples).astype(float) 
+            batch["reward"] = success * self.reward_scale + self.reward_shift
+            if self.terminal:
+                batch['masks'] = (1.0 - success.astype(float))
+            else:
+                batch['masks'] = np.ones(batch_size)
+        else:
+            # search over diffusion samples
+            raise NotImplementedError
+        
         return batch
 

@@ -35,8 +35,8 @@ flags.DEFINE_integer('save_interval', 100000, 'Save interval.')
 flags.DEFINE_integer('batch_size', 256, 'Mini batch size.')
 flags.DEFINE_integer('max_steps', int(1e6), 'Number of training steps.')
 
-flags.DEFINE_enum('icvf_type', 'multilinear', list(icvfs), 'Which model to use.')
-flags.DEFINE_list('hidden_dims', [256, 256], 'Hidden sizes.')
+flags.DEFINE_enum('icvf_type', 'monolithic', list(icvfs), 'Which model to use.')
+flags.DEFINE_list('hidden_dims', [512, 512, 512], 'Hidden sizes.')
 
 def update_dict(d, additional):
     d.update(additional)
@@ -52,15 +52,17 @@ wandb_config = update_dict(
     }
 )
 
+# new params: discount
+
 config = update_dict(
     learner.get_default_config(),
     {
-    'discount': 0.99, 
-     'optim_kwargs': { # Standard Adam parameters for non-vision
+    'discount': 0.999, 
+    'optim_kwargs': { # Standard Adam parameters for non-vision
             'learning_rate': 3e-4,
             'eps': 1e-8
         }
-    }
+    } 
 )
 
 gcdataset_config = GCSDataset.get_default_config()
@@ -115,7 +117,7 @@ def main(_):
                 config=FLAGS.config.to_dict()
             )
 
-            fname = os.path.join(FLAGS.save_dir, f'params.pkl')
+            fname = os.path.join(FLAGS.save_dir, 'step_{}_params.pkl'.format(i))
             print(f'Saving to {fname}')
             with open(fname, "wb") as f:
                 pickle.dump(save_dict, f)
