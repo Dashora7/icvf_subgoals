@@ -54,6 +54,16 @@ class ICVFViT(nn.Module):
         enc = self.encoder(seq, train=train)
         return self.vf(enc)
     
+
+class VFWithImage(nn.Module):
+    encoder: VisionTransformer
+    vf: nn.Module
+    @nn.compact
+    def __call__(self, observations: jnp.ndarray, train=True) -> jnp.ndarray:
+        enc = self.encoder(observations, train=train)
+        return self.vf(enc)    
+    
+
 def create_icvf(icvf_cls_or_name, encoder=None, ensemble=True, **kwargs):    
     if isinstance(icvf_cls_or_name, str):
         icvf_cls = icvfs[icvf_cls_or_name]
@@ -69,8 +79,6 @@ def create_icvf(icvf_cls_or_name, encoder=None, ensemble=True, **kwargs):
         return vf
 
     return ICVFWithEncoder(encoder, vf)
-
-
 
 ##
 # Actual ICVF definitions below

@@ -159,6 +159,57 @@ def periodic_target_update(
     )
     return target_model.replace(params=new_target_params)
 
+def vf_loss(agent, batch, value_params):
+    ###
+    # Compute TD error for outcome g
+    # r(s) + gamma * V(s') - V(s)
+    ###
+
+    (next_v1_gz, next_v2_gz) = agent.target_value(batch['next_observations'])
+    q1 = batch['rewards'] + agent.config['discount'] * batch['masks'] * next_v1_gz
+    q2 = batch['rewards'] + agent.config['discount'] * batch['masks'] * next_v2_gz
+
+    (v1, v2) = agent.value(batch['observations'], params=value_params)
+    
+    value_loss1 = ((q1 - v1)**2).mean()
+    value_loss2 = ((q2 - v2)**2).mean()
+    value_loss = value_loss1 + value_loss2
+
+    return value_loss, {
+        'value_loss': value_loss
+    }
+
+class VFAgent(flax.struct.PyTreeNode):
+    value: TrainState
+    target_value: TrainState
+    config: dict = nonpytree_field()
+        
+    @functools.partial(jax.pmap, axis_name='pmap')
+    def update(agent, pretrain_batch):
+        def value_loss_fn(value_params):
+            return vf_loss(agent, pretrain_batch, value_params)
+        
+        new_target_value = target_update(agent.value, agent.target_value, agent.config['target_update_rate'])
+        new_value, value_info = agent.value.apply_loss_fn(loss_fn=value_loss_fn, has_aux=True, pmap_axis='pmap')
+        return agent.replace(target_value=new_target_value, value=new_value), value_info    
+
+    @functools.partial(jax.pmap, axis_name='pmap')
+    def get_debug_metrics(agent, batch):
+        def get_info(s):
+            if agent.config['no_intent']:
+                z = jax.tree_map(jnp.ones_like, z)
+            return {'v': agent.value(s)[0]}
+        s = batch['observations']
+        info_s = get_info(s)
+        stats = {
+            'v_s': info_s['v'].mean()
+        }
+        stats = jax.lax.pmean(stats, axis_name='pmap')
+        return stats
+
+
+
+
 class ICVFAgent(flax.struct.PyTreeNode):
     # rng: jax.random.PRNGKey
     value: TrainState
@@ -195,12 +246,17 @@ def create_learner(
                  no_intent: bool = False,
                  min_q: bool = True,
                  periodic_target_update: bool = False,
+                 simple_vf=False,
                 **kwargs):
 
         print('Extra kwargs:', kwargs)
 
         rng = jax.random.PRNGKey(seed)
-        value_params =  value_def.init(rng, observations, observations, observations).pop('params')
+        if simple_vf:
+            value_params =  value_def.init(rng, observations).pop('params')
+        else:
+            value_params =  value_def.init(rng, observations, observations, observations).pop('params')
+        
         value = TrainState.create(value_def, value_params, tx=optax.adam(**optim_kwargs))
         target_value = TrainState.create(value_def, value_params)
 
@@ -212,9 +268,10 @@ def create_learner(
             min_q=min_q,
             periodic_target_update=periodic_target_update,
         ))
-
-        # return ICVFAgent(rng=rng, value=value, target_value=target_value, config=config)
-        return ICVFAgent(value=value, target_value=target_value, config=config)
+        if simple_vf:
+            return VFAgent(value=value, target_value=target_value, config=config)
+        else:
+            return ICVFAgent(value=value, target_value=target_value, config=config)
 
 
 def get_default_config():
