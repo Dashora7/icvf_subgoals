@@ -7,7 +7,7 @@ class AtariEncoder(nn.Module):
   """Class defining the actor-critic model."""
 
   @nn.compact
-  def __call__(self, x):
+  def __call__(self, x, train=None):
     """Define the convolutional network architecture.
 
     Architecture originates from "Human-level control through deep reinforcement

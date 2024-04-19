@@ -191,7 +191,17 @@ class VFAgent(flax.struct.PyTreeNode):
         
         new_target_value = target_update(agent.value, agent.target_value, agent.config['target_update_rate'])
         new_value, value_info = agent.value.apply_loss_fn(loss_fn=value_loss_fn, has_aux=True, pmap_axis='pmap')
+        return agent.replace(target_value=new_target_value, value=new_value), value_info
+    
+    @jax.jit
+    def update_single(agent, pretrain_batch):
+        def value_loss_fn(value_params):
+            return vf_loss(agent, pretrain_batch, value_params)
+        
+        new_target_value = target_update(agent.value, agent.target_value, agent.config['target_update_rate'])
+        new_value, value_info = agent.value.apply_loss_fn(loss_fn=value_loss_fn, has_aux=True)
         return agent.replace(target_value=new_target_value, value=new_value), value_info    
+
 
     @functools.partial(jax.pmap, axis_name='pmap')
     def get_debug_metrics(agent, batch):
@@ -206,9 +216,6 @@ class VFAgent(flax.struct.PyTreeNode):
         }
         stats = jax.lax.pmean(stats, axis_name='pmap')
         return stats
-
-
-
 
 class ICVFAgent(flax.struct.PyTreeNode):
     # rng: jax.random.PRNGKey

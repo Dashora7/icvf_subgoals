@@ -1,6 +1,6 @@
 from jaxrl_m.typing import *
 from jaxrl_m.networks import MLP, get_latent, default_init, ensemblize
-from jaxrl_m.vision.vit import VisionTransformer
+from jaxrl_m.vision.vit import Encoder, VisionTransformer
 
 import flax.linen as nn
 import jax.numpy as jnp
@@ -32,7 +32,7 @@ class ICVFWithEncoder(nn.Module):
         latent = get_latent(self.encoder, observations)
         return self.vf.get_phi(latent)
 
-    def __call__(self, observations, outcomes, intents):
+    def __call__(self, observations, outcomes, intents, train=None):
         latent_s = get_latent(self.encoder, observations)
         latent_g = get_latent(self.encoder, outcomes)
         latent_z = get_latent(self.encoder, intents)
@@ -63,6 +63,14 @@ class VFWithImage(nn.Module):
         enc = self.encoder(observations, train=train)
         return self.vf(enc)    
     
+class SimpleVF(nn.Module):
+    hidden_dims: Sequence[int]
+
+    @nn.compact
+    def __call__(self, observations: jnp.ndarray, train=None) -> jnp.ndarray:
+        V_net = LayerNormMLP((*self.hidden_dims, 1), activate_final=False)
+        v = V_net(observations)
+        return jnp.squeeze(v, -1)
 
 def create_icvf(icvf_cls_or_name, encoder=None, ensemble=True, **kwargs):    
     if isinstance(icvf_cls_or_name, str):
@@ -187,8 +195,44 @@ class SqueezedLayerNormMLP(nn.Module):
         return jnp.squeeze(x, -1)
 
 
+class SequentialVF(nn.Module):
+    num_layers: int
+    mlp_dim: int
+    num_heads: int
+    dropout: float = 0.0
+    
+    @nn.compact
+    def __call__(self, observations: jnp.ndarray, outcomes: jnp.ndarray, z: jnp.ndarray, return_info=False, train=True) -> jnp.ndarray:
+        V_net = Encoder(
+            num_layers=self.num_layers,
+            mlp_dim=self.mlp_dim,
+            num_heads=self.num_heads,
+            dropout_rate=self.dropout,
+            attention_dropout_rate=self.dropout,
+        )
+        cls_token = self.param('cls_token', nn.initializers.zeros, (1, z.shape[-1]))
+        cls_token = jnp.tile(cls_token, (z.shape[0], 1))
+        x = jnp.stack([cls_token, observations, outcomes, z], axis=1) # make sequence
+        vseq = V_net(x, train=train) # run transformer
+        v = nn.Dense(1)(vseq[:, 0]) # regress on <CLS> token
+        if not return_info:
+            return jnp.squeeze(v, -1), jnp.squeeze(v, -1)
+        else:
+            return {
+                'v': jnp.squeeze(v, -1),
+                'psi': outcomes,
+                'z': z,
+                'phi': observations,
+            }
+    
+    def get_phi(self, observations):
+        print('Warning: SequentialVF does not define a state representation phi(s). Returning phi(s) = s')
+        return observations
+
 
 icvfs = {
     'multilinear': MultilinearVF,
     'monolithic': MonolithicVF,
+    'simple': SimpleVF,
+    'sequential': SequentialVF
 }
